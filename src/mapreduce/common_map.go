@@ -55,11 +55,14 @@ func doMap(
 	//
 	// Your code here (Part I).
 	//
-	contents,err := ioutil.ReadFile(inFile)
+	raw,err := ioutil.ReadFile(inFile)
 	if err != nil {
 		fmt.Printf("worong!")
 	}
+	contents := string(raw[:])
 	fmt.Printf("%s", contents)
+	res := mapF(inFile, contents)
+	fmt.Printf("%s", res)
 }
 
 func ihash(s string) int {
