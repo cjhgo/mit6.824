@@ -1,6 +1,8 @@
 package mapreduce
 
 import (
+	"fmt"
+	"io/ioutil"
 	"hash/fnv"
 )
 
@@ -53,6 +55,11 @@ func doMap(
 	//
 	// Your code here (Part I).
 	//
+	contents,err := ioutil.ReadFile(inFile)
+	if err != nil {
+		fmt.Printf("worong!")
+	}
+	fmt.Printf("%s", contents)
 }
 
 func ihash(s string) int {
