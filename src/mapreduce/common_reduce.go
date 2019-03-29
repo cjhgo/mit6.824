@@ -4,6 +4,8 @@ import (
 	"os"
 	"encoding/json"
 	"sort"
+	// "fmt"
+	// "log"
 )
 
 func doReduce(
@@ -90,4 +92,6 @@ func doReduce(
 			valuesToReduce=append(valuesToReduce, contents[i].Value)
 		}
 	}
+	lastKey := contents[len(contents)-1].Key
+	enc.Encode(KeyValue{lastKey, reduceF(lastKey, valuesToReduce)})
 }
