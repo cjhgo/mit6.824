@@ -21,11 +21,6 @@ func mapF(filename string, contents string) []mapreduce.KeyValue {
 	word_cnt :=[]mapreduce.KeyValue{}
 	isSpace :=func (s rune)bool{
 		return !unicode.IsLetter(s) && !unicode.IsNumber(s)
-		// if string(s) == " " || string(s) == "\n" || string(s) == ","{
-		// 	return true
-		// }else{
-		// 	return false
-		// }
 	}
 	for _,runeValue := range strings.FieldsFunc(contents, isSpace){
 		key := string(runeValue)

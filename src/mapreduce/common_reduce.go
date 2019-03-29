@@ -1,7 +1,6 @@
 package mapreduce
 
 import (
-	"fmt"
 	"os"
 	"encoding/json"
 	"sort"
@@ -73,9 +72,6 @@ func doReduce(
 		raw.Close()
 	}
 
-	// fmt.Println("\n\n\n!!!!!\n",contents[:20])
-
-	fmt.Println(jobName, reduceTask, outFile, nMap)
 	sort.Slice(contents, func(i,j int)bool{
 		return contents[i].Key > contents[j].Key
 	})

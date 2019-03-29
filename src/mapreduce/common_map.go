@@ -65,20 +65,19 @@ func doMap(
 	// fmt.Printf("%s", contents)
 	res := mapF(inFile, contents)
 	// fmt.Printf("%s", res)
-	outFiles :=make([]*os.File,nReduce)
+	encSlice :=make([]*json.Encoder,nReduce)
 	for i:=0; i < nReduce; i++{
 		filename:=reduceName(jobName,mapTask,i)
 		f,err:=os.Create(filename)
 		if err != nil{
 			panic(err)
 		}
-		outFiles[i]=f
+		encSlice[i]=json.NewEncoder(f)
 		defer f.Close()
 	}
 	for _,ele := range res{
 		r:=ihash(ele.Key)%nReduce
-		enc := json.NewEncoder(outFiles[r])
-		enc.Encode(&ele)
+		encSlice[r].Encode(&ele)
 	}
 }
 
