@@ -105,5 +105,30 @@ doReduce函数会调用用户提供的reduce函数.reduce 任务产生nReduce个
 
 
 
-#### 第一部分,写一个简单的MapReduce程序
+#### 写一个简单的MapReduce程序
+#### 分布式地执行mapreduce任务
+在之前的实现中,一次只会运行一个map或reduce任务
+MapReduce框架最大的卖点就是只要程序是按map-reduce编程模型写的
+系统能够自动把普通的串行代码并行化
+
+master.go
+worker.go
+common_rpc.go
+schedule.go
+master在执行过程两次调用`schedule`,一次调度map任务,一次调度reduce任务
+shedule的功能是把任务分发给空闲的worker,
+分发之后,schedule等待worker完成任务
+schedule从`registerChan`这个参数中了解系统一共有多少个worker
+schedule通过`Worker.DoTask`这样一个rpc调用让worker执行任务
+common_rpc.go文件里定义了这个rpc调用的参数`DoTaskArgs`
+schedule要通过common_rpc.go中的`call`函数来向worker发起rpc调用
+格式是这样的`call(<rpc_address>,<rpc_name>,<rpc_arg>,<rpc_res>)`
+从`registerChan`可以获取rpc_address
+rpc_name是`worker.DoTask`,即
+rpc_arg是`DoTaskArgs`类型的参数
+
+
+
+
+
 
