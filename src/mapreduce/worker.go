@@ -83,11 +83,11 @@ func (wk *Worker) DoTask(arg *DoTaskArgs, _ *struct{}) error {
 	wk.concurrent -= 1
 	wk.Unlock()
 
-	if wk.parallelism != nil {
-		wk.parallelism.mu.Lock()
-		wk.parallelism.now -= 1
-		wk.parallelism.mu.Unlock()
-	}
+	// if wk.parallelism != nil {
+	// 	wk.parallelism.mu.Lock()
+	// 	wk.parallelism.now -= 1
+	// 	wk.parallelism.mu.Unlock()
+	// }
 
 	fmt.Printf("%s: %v task #%d done\n", wk.name, arg.Phase, arg.TaskNumber)
 	return nil

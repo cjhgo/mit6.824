@@ -24,7 +24,7 @@ const (
 
 // Split in words
 func MapFunc(file string, value string) (res []KeyValue) {
-	debug("Map %v\n", value)
+	// debug("Map on %v\n", value)
 	words := strings.Fields(value)
 	for _, w := range words {
 		kv := KeyValue{w, "1"}
@@ -37,7 +37,7 @@ func MapFunc(file string, value string) (res []KeyValue) {
 func ReduceFunc(key string, values []string) string {
 	res :=0
 	for _, e := range values {
-		debug("Reduce %s %v\n", key, e)
+		// debug("Reduce %s %v\n", key, e)
 		cnt,_ := strconv.Atoi(e)
 		res += cnt
 	}
@@ -92,6 +92,7 @@ func check(t *testing.T, files []string) {
 // Check that they processed at least 1 DoTask RPC.
 func checkWorker(t *testing.T, l []int) {
 	for _, tasks := range l {
+		fmt.Printf("finish task: %d\n",tasks)
 		if tasks == 0 {
 			t.Fatalf("A worker didn't do any work\n")
 		}
