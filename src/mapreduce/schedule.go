@@ -14,13 +14,40 @@ import "fmt"
 func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, registerChan chan string) {
 	var ntasks int
 	var n_other int // number of inputs (for reduce) or outputs (for map)
+	workers :=[]string{}
+	i := 0
+	for{
+		worker:= <- registerChan
+		workers = append(workers,worker)
+		i++
+		if i >= 2{
+			break
+		}
+	}	
 	switch phase {
 	case mapPhase:
 		ntasks = len(mapFiles)
 		n_other = nReduce
+		for index,file:= range mapFiles{
+			args := &DoTaskArgs{jobName,file,phase,index,n_other}
+			fmt.Println(args)
+			worker := workers[0]
+			if index > 15{
+				worker = workers[1]
+			}
+			call(worker, "Worker.DoTask",args,nil)
+		}
 	case reducePhase:
 		ntasks = nReduce
 		n_other = len(mapFiles)
+		for i := 0; i < nReduce;i++{
+			args := &DoTaskArgs{jobName,"",phase,i,n_other}
+			worker := workers[0]
+			if i > 5{
+				worker = workers[1]
+			}
+			call(worker, "Worker.DoTask",args,nil)
+		}
 	}
 
 	fmt.Printf("Schedule: %v %v tasks (%d I/Os)\n", ntasks, phase, n_other)
