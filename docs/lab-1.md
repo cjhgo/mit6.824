@@ -114,6 +114,7 @@ MapReduce框架最大的卖点就是只要程序是按map-reduce编程模型写�
 master.go
 worker.go
 common_rpc.go
+
 schedule.go
 master在执行过程两次调用`schedule`,一次调度map任务,一次调度reduce任务
 shedule的功能是把任务分发给空闲的worker,
@@ -130,5 +131,177 @@ rpc_arg是`DoTaskArgs`类型的参数
 
 
 
+##### 并行执行的流程
+
+```go
+//运行入口
+//test-test.go中的这个函数并行执行mapreduce程序
+func TestParallelBasic(t *testing.T) {
+  //串行部分,准备工作
+  mr := setup()
+  {-------------
+    //创建20个input文件
+    files := makeInputs(nMap)
+    //根据uid,pi创建Master的address
+    master := port("master")
+    //调用master.go中的这个Distributed函数,启动master
+    mr := Distributed("test", files, nReduce, master)
+    {-------------------------------------------------
+      //创建master
+      mr = newMaster(master)
+      //调用位于master_rpc.go中的startRPCServermethod
+      //启动master的rpc服务:接收来自worker的地址注册
+      mr.startRPCServer()
+      //调用master.go中run函数
+      go mr.run(jobName, files, nreduce,
+        //就地创建的schedule函数
+        func(phase jobPhase) {
+          ch := make(chan string)
+          go mr.forwardRegistrations(ch)
+            {--------------------------
+              //i记录我们通过ch通知了多少个worker
+              i := 0
+              for {//死循环,要么用channel发消息,要么陷入等待
+                mr.Lock()
+                if len(mr.workers) > i {
+                  // there's a worker that we haven't told schedule() about.
+                  w := mr.workers[i]
+                  go func() { ch <- w }() // send without holding the lock.
+                  i = i + 1
+                } else {
+                  //已经通知完了所有的worker,通过条件变量陷入等待
+                  //Master.Register事件的发生
+                  mr.newCond.Wait()
+                }
+                mr.Unlock()
+              }
+            }
+          //调用位于schedule.go中的schedule函数
+          schedule(mr.jobName, mr.files, mr.nReduce, phase, ch)
+          {----------------------------------------------------
+            call(workers, "Worker.DoTask",args,nil)
+            {-------------------------------------
+              switch arg.Phase 
+              {
+              case mapPhase:
+                //调用位于common_map.go中的doMap函数
+                doMap(arg.JobName, arg.TaskNumber, arg.File, arg.NumOtherPhase, wk.Map)
+                {----------------------------------------------------------------------
+
+                }
+              case reducePhase:
+                //调用位于common_reduce.go中的doReduce函数
+                doReduce(arg.JobName, arg.TaskNumber, mergeName(arg.JobName, arg.TaskNumber), arg.NumOtherPhase, wk.Reduce)
+                {----------------------------------------------------------------------------------------------------------
+
+                }
+              }
+            }
+          }
+        },
+        //就地创建的finish函数
+        func() {
+          mr.stats = mr.killWorkers()
+          {--------------------------
+            mr.Lock()defer mr.Unlock()
+            ntasks := make([]int, 0, len(mr.workers))
+            for _, w := range mr.workers 
+            {
+              debug("Master: shutdown worker %s\n", w)
+              var reply ShutdownReply
+              ok := call(w, "Worker.Shutdown", new(struct{}), &reply)
+              {------------------------------------------------------
+                //此处是rpc调用
+                wk.Lock()defer wk.Unlock()
+                res.Ntasks = wk.nTasks
+                wk.nRPC = 1
+              }
+              ntasks = append(ntasks, reply.Ntasks)
+            }
+          }
+          //调用位于maser_rpc.go中的stopRPCServermethod
+          //关闭master的rpc服务          
+          mr.stopRPCServer()
+          {-----------------
+          	var reply ShutdownReply
+            ok := call(mr.address, "Master.Shutdown", new(struct{}), &reply)
+            {-------------------------------------
+              //此处是rpc调用
+              close(mr.shutdown)//关闭channel
+	            mr.l.Close() //关闭listener
+            }
+          }
+        })
+      {---------------------------------------------------------
+        //执行map
+        schedule(mapPhase)
+        //执行reduce
+        schedule(reducePhase)
+        //执行参数中的finish函数
+        finish()
+        //把reduce的结果合并为一个
+	      mr.merge()
+	      mr.doneChannel <- true      
+      }
+    }
+  }
+  //两次执行位于worker.go中的RunWorker函数
+  for i := 0; i < 2; i++ 
+  {
+    //RunWorker和
+		go RunWorker(mr.address, port("worker"+strconv.Itoa(i)),
+      MapFunc, ReduceFunc, -1, nil)
+      {-----------------------------------------------------
+        wk := new(Worker)
+        wk.init(name,Map,Reduce,nRpc,parallelism)
+        rpcs := rpc.NewServer()
+        rpcs.Register(wk)        
+        l, e := net.Listen("unix", me)        
+        wk.l = l
+        wk.register(MasterAddress)
+        {--------------------------
+          args := new(RegisterArgs)
+          args.Worker = wk.name
+          //worker把自己的地址作为args参数通过rpc调用注册给master
+          ok := call(master, "Master.Register", args, new(struct{}))
+          {---------------------------------------------------------
+            //此处是位于master.go上Register函数的远程源码,这正是rpc的意义
+            //存在多个worker通过这个rpc调用修改workers数组的可能,所以要加锁
+            mr.Lock()defer mr.Unlock()
+            //向master的workers数组添加自己的信息
+	          mr.workers = append(mr.workers, args.Worker)
+            //通过条件变量告诉forwardRegistrations函数,有新的worker可以通知
+            mr.newCond.Broadcast()
+          }
+        }
+        for {//死循环
+          wk.Lock()
+          if wk.nRPC == 0 {
+            wk.Unlock()
+            break
+          }
+          wk.Unlock()
+          //worker侦听-接收-处理进入的链接
+          conn, err := wk.l.Accept()
+          if err == nil {
+            wk.Lock()
+            wk.nRPC--
+            wk.Unlock()
+            go rpcs.ServeConn(conn)
+          } else {
+            break
+          }
+        }
+        wk.l.Close()     
+      }
+	}
+  mr.Wait()
+  ---------
+    <-mr.doneChannel
+	check(t, mr.files)
+	checkWorker(t, mr.stats)
+	cleanup(mr)
+}
+```
 
 
