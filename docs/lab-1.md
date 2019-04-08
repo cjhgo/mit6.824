@@ -1,11 +1,12 @@
-
+[TOC]
 
 ### 实验1,MapReduce
 使用golang实现一个MapReduce库
 
+执行`bash test-mr.sh`会对各个part进行测试
 
-
-#### wordcount算法的伪代码
+#### part2 实现串行执行的map-reduce程序
+##### wordcount算法的伪代码
 ```go
 func map(){
   //这里word要以单词为单位
@@ -24,7 +25,7 @@ func reduce(){
 }
 ```
 
-#### 代码的组织结构/系统架构
+##### 代码的组织结构/系统架构
 
 1. 提供初始化参数(输入文件,自定义函数)
 应用程序提供一组输入文件,输入文件的数目隐式定义了nMap,一个map函数,一个reduce函数,reduce任务的次数(nReduce)
@@ -103,10 +104,7 @@ doReduce函数会调用用户提供的reduce函数.reduce 任务产生nReduce个
 6. master给每一个worker发送一个shutdown rpc,然后关闭自己的rpc服务
 
 
-
-
-#### 写一个简单的MapReduce程序
-#### 分布式地执行mapreduce任务
+#### part3分布式地执行mapreduce任务
 在之前的实现中,一次只会运行一个map或reduce任务
 MapReduce框架最大的卖点就是只要程序是按map-reduce编程模型写的
 系统能够自动把普通的串行代码并行化
@@ -346,4 +344,126 @@ func TestParallelBasic(t *testing.T) {
 }
 ```
 
+##### schedule中的调度逻辑
+```go
+func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, registerChan chan string) {
+	var ntasks int
+	var n_other int // number of inputs (for reduce) or outputs (for map)
+	var wg sync.WaitGroup
+	switch phase {
+	case mapPhase:
+		ntasks = len(mapFiles)
+		n_other = nReduce
+		for index,file:= range mapFiles{
+			args := &DoTaskArgs{jobName,file,phase,index,n_other}
+			fmt.Println(args)
+			wg.Add(1)
+			go func(args *DoTaskArgs){
+				worker := <- registerChan
+				call(worker, "Worker.DoTask",args,nil)				
+				wg.Done()
+				registerChan <- worker
+			}(args)					
+		}
+	case reducePhase:
+		ntasks = nReduce
+		n_other = len(mapFiles)
+		for i := 0; i < nReduce;i++{
+			args := &DoTaskArgs{jobName,"",phase,i,n_other}
+			wg.Add(1)
+			go func(args *DoTaskArgs){
+				worker := <- registerChan
+				call(worker, "Worker.DoTask",args,nil)				
+				wg.Done()
+				registerChan <- worker
+			}(args)					
+		}
+	}
+	fmt.Printf("Schedule: %v %v tasks (%d I/Os)\n", ntasks, phase, n_other)
+	wg.Wait()
+	fmt.Printf("Schedule: %v done\n", phase)
+}
 
+
+```
+#### part4处理worker失败的情况
+
+**程序如何模拟worker失败?**
+RunWorker函数启动的时候有一个参数nRPC
+这个参数会赋值给worker struct的nRPC
+它设置了一个worker能处理的RPC调用的次数
+worker每次收到rpc调用,都会加锁对nRPC减一
+当nRPC减到0的时候,worker的for死循环就会break,worker结束运行
+
+所以,如果RunWorker这个参数传-1,那么相当于设置了worker可以执行MAXINT次rpc
+这个参数传10,那么这个worker就只能执行10次RPC
+通过`go test -run TestOneFailure`命令启动测试
+```go
+//程序入口
+func TestOneFailure(t *testing.T) {
+	mr := setup()
+	// Start 2 workers that fail after 10 tasks
+	go RunWorker(mr.address, port("worker"+strconv.Itoa(0)),
+    MapFunc, ReduceFunc, 10, nil)
+	go RunWorker(mr.address, port("worker"+strconv.Itoa(1)),
+		MapFunc, ReduceFunc, -1, nil)
+	mr.Wait()
+	check(t, mr.files)
+	checkWorker(t, mr.stats)
+	cleanup(mr)
+}
+```
+**worker failure之后,map-reduce处理的依据是什么**
+worker failure之后,master执行的rpc就也会失败,call调用返回false
+但失败具体的情况有很多种:
+worker执行了任务,但是返回值丢失了;worker还在执行任务,但是master rpc超时了;等待
+
+由于map-reduce是函数式编程范式,
+即map-reduce函数是没有副作用的,
+因此,worker failure之后,任务只要重新执行就可以了
+(在输出的读写不冲突的前提下)
+
+**如何修改schedule张的调度逻辑,来处理worker failure的情况?**
+在part3中,是遍历nTask,一个一个的启动协程执行任务
+考虑到worker failure之后,任务有可能会被重新执行
+所以,要引入一个task channel,从中取任务`for task := range taskChannel`
+worker失败之后,把任务重新放入task channel
+任务全部完成之后,要`close(taskChannel)`这样前边的for range才能结束运行
+
+```go
+  //创建任务channel
+  taskChannel := make(chan int, ntasks)
+  //把所以任务都放入channel
+  for i := 0; i < ntasks; i++{
+    taskChannel <- i
+  }
+  cnt := 0
+  //从channel中读取任务
+  for task := range taskChannel{
+    args := &DoTaskArgs{jobName,mapFiles[task],phase,task,n_other}
+    fmt.Println(args)
+    wg.Add(1)
+    //启动协程,执行任务
+    go func(args *DoTaskArgs){
+      worker := <- registerChan
+      ok := call(worker, "Worker.DoTask",args,nil)
+      if ok{
+        //任务正确完成,计数+1
+        cnt++
+        //任务全部完成,channel关闭
+        if cnt == ntasks{
+          close(taskChannel)
+        }
+      }else{//worker failure,把任务重新放入task channel
+        taskChannel <-  args.TaskNumber
+      }
+      wg.Done()
+      registerChan <- worker
+    }(args)          
+  }
+}
+```
+#### part5写一个倒排索引的程序
+mapF: return word:filename
+reduceF: return word:{count,filename0,filename1,...,filenamen}
+注意,对filename要经过去重处理,然后还要排序
