@@ -179,24 +179,66 @@ func TestParallelBasic(t *testing.T) {
           //调用位于schedule.go中的schedule函数
           schedule(mr.jobName, mr.files, mr.nReduce, phase, ch)
           {----------------------------------------------------
-            call(workers, "Worker.DoTask",args,nil)
+            //for task go call
+            //对每一个任务启动一个协程,来执行DoTask rpc
+            go call(workers, "Worker.DoTask",args,nil)
             {-------------------------------------
+              //此处是rpc调用,执行的是位于worker.go中的DoTask函数的源码
               switch arg.Phase 
               {
               case mapPhase:
                 //调用位于common_map.go中的doMap函数
                 doMap(arg.JobName, arg.TaskNumber, arg.File, arg.NumOtherPhase, wk.Map)
                 {----------------------------------------------------------------------
-
+                  //从文件中读取内容,用mapF函数处理                  
+                  contents := read from infile                    
+                  res := mapF(inFile, contents)//得到的res是Key-Value array
+                  //创建nReduce个中间文件,并关联json.Encoder
+                  encSlice :=make([]*json.Encoder,nReduce)
+                  for i:=0; i < nReduce; i++
+                  {
+                    f=os.Create(filename_i)
+                    encSlice[i]=json.NewEncoder(f)
+                  }
+                  //遍历res,对每个key用hash映射到某个文件
+                  for _,ele := range res
+                  {
+                    r:=ihash(ele.Key)%nReduce
+                    //json编码key-value,写入到文件
+                    encSlice[r].Encode(&ele)
+                  }
                 }
               case reducePhase:
                 //调用位于common_reduce.go中的doReduce函数
                 doReduce(arg.JobName, arg.TaskNumber, mergeName(arg.JobName, arg.TaskNumber), arg.NumOtherPhase, wk.Reduce)
-                {----------------------------------------------------------------------------------------------------------
-
+                {----------------------------------------------------------------------------------------------------------   
+                  contents := []KeyValue{}
+                  //从nMap个文件中读取key-value
+                  //map阶段产生了nMapxnReduce个中间文件,根据我是第几个reduce任务,判断读取哪nMap个文件
+                  for i:=0; i < nMap; i++
+                  {                    
+                    raw := os.Open(fnmaei)//打开文件
+                    dec := json.NewDecoder(raw)//关联Decoder
+                    for dec.Decode(&tmp)
+                      contents = append(contents, tmp)//把解析出的key-value添加到KeyValue数组
+                  }
+                  //把从nMap个文件中读出的KeyValue数组按Key排序
+                  sort.Slice(contents).byKey
+                  outF:= os.Create(outFile)//创建输出文件
+                  enc := json.NewEncoder(outF)//关联编码器
+                  valuesToReduce := []string{contents[0].Value}
+                  //遍历排序之后的KeyValue数组
+                  for i := 1; i <len(contents); i++
+                  {
+                    //把同key的value连起来,用reduceF函数处理
+                    reducedValue := reduceF(Key, Values)
+                    enc.Encode({Key, reducedValue})//写入到输出文件
+                  }
                 }
               }
             }
+            //等待协程完成,即等待任务完成,才能进入下一阶段
+            wait()
           }
         },
         //就地创建的finish函数
