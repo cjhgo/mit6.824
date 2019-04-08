@@ -26,8 +26,8 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 			go func(args *DoTaskArgs){
 				worker := <- registerChan
 				call(worker, "Worker.DoTask",args,nil)				
-				registerChan <- worker
 				wg.Done()
+				registerChan <- worker
 			}(args)					
 		}
 	case reducePhase:
