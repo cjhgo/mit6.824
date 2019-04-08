@@ -15,36 +15,39 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 	var ntasks int
 	var n_other int // number of inputs (for reduce) or outputs (for map)
 	var wg sync.WaitGroup
+
 	switch phase {
 	case mapPhase:
 		ntasks = len(mapFiles)
 		n_other = nReduce
-		for index,file:= range mapFiles{
-			args := &DoTaskArgs{jobName,file,phase,index,n_other}
-			fmt.Println(args)
-			wg.Add(1)
-			go func(args *DoTaskArgs){
-				worker := <- registerChan
-				call(worker, "Worker.DoTask",args,nil)				
-				wg.Done()
-				registerChan <- worker
-			}(args)					
-		}
 	case reducePhase:
 		ntasks = nReduce
 		n_other = len(mapFiles)
-		for i := 0; i < nReduce;i++{
-			args := &DoTaskArgs{jobName,"",phase,i,n_other}
-			wg.Add(1)
-			go func(args *DoTaskArgs){
-				worker := <- registerChan
-				call(worker, "Worker.DoTask",args,nil)				
-				wg.Done()
-				registerChan <- worker
-			}(args)					
-		}
 	}
-
+	taskChannel := make(chan int, ntasks)
+	for i := 0; i < ntasks; i++{
+		taskChannel <- i
+	}
+	cnt := 0
+	for task := range taskChannel{
+		args := &DoTaskArgs{jobName,mapFiles[task],phase,task,n_other}
+		fmt.Println(args)
+		wg.Add(1)
+		go func(args *DoTaskArgs){
+			worker := <- registerChan
+			ok := call(worker, "Worker.DoTask",args,nil)
+			if ok{
+				cnt++
+				if cnt == ntasks{
+					close(taskChannel)
+				}
+			}else{
+				taskChannel <-  args.TaskNumber
+			}
+			wg.Done()
+			registerChan <- worker
+		}(args)					
+	}
 	fmt.Printf("Schedule: %v %v tasks (%d I/Os)\n", ntasks, phase, n_other)
 
 	// All ntasks tasks have to be scheduled on workers. Once all tasks
