@@ -68,6 +68,26 @@ Mkae 的 me 参数表明了自己在 peers 数组中的位置
 
 通过 `go test -run 2A`启动测试用例
 
+#### 提示
++ 在Raft.go中为Rast struct添加任何必要的成员;定义一个struct来存放log entry;
++ 补充`RequestVoteArgs and RequestVoteReply`结构体;
+在`Make`method中创建一个背景协程.
+当Raft实例一段时间没有从其他实例收到心跳的时候,这个协程会通过`RequestVote`rpc来周期性的进行leader选举;
+相应地,实现Raft的`RequestVote`method
++ 通过`AppendEntries`rpc来实现心跳机制,leader会周期性的发送这个rpc.
+因此,要实现Raft的`AppendEntries`method
+?so that other servers don't step forward as leaders when one has already been elected?
+  - 确保每个Raft实例的`election timeouts`时间是不同的
++ 测试用例要求,leader在1s内发送心跳不超过10次
+?为什么
++ 测试用例要求所实现的Raft遇到leader失败的情况时能够在5s内选出新的leader
+因此,所选择的`election timeouts`时间要够短以保证能够在5s的一轮或多轮选举中选出leader
++ 论文中提到`election timeouts`在150-300ms内随机选取,这要求每150ms至少发起一次心跳
+而测试用例要求1s内发送心跳不超过10次,因此实验中用的数值要比150-300大,而又不能太大
++ 可以使用`time.Timer和time.Ticket`来实现定时,和周期性的执行调用
++ 仔细阅读论文的figure2,选举的规则分散在figure2的各个部分
+
+
 
 ### part2B
 
