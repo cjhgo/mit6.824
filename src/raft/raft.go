@@ -1,5 +1,7 @@
 package raft
 
+import "time"
+import "math/rand"
 //
 // this is an outline of the API that raft must expose to
 // the service (or tester). see comments below for
@@ -45,12 +47,24 @@ type ApplyMsg struct {
 //
 // A Go object implementing a single Raft peer.
 //
+type RaftState int
+const (
+	Leader RaftState = 0
+	Follower RaftState = 1
+	Candidate RaftState = 2
+)
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
-
+	role			RaftState						// this peer 处以哪个状态,Leader/Follower/Candidate
+	voteFor 	int									// this peer 是否已经投过票了
+	voteCnt 	int 								// this peer 在选举中获得了多少票数
+	currentTerm		int							// this peer 当前处于哪个term
+	currentIndex	int							// tiis peer 的logs最新的log entry的index	
+	n					int									// peers中一共有多少个peer
+	electionTimer *time.Timer 			//选举计时器
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
@@ -116,6 +130,10 @@ func (rf *Raft) readPersist(data []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	Term int
+	Peer int
+
+
 }
 
 //
@@ -124,13 +142,22 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
+	Term int
+	Result bool
 }
 
 //
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	DPrintf("raft %v is voting, self state: %v %v", rf.me, rf.voteFor, rf.voteCnt)
 	// Your code here (2A, 2B).
+	if rf.voteFor != -1 || args.Term < rf.currentTerm{
+		reply.Result = false
+	}else{		
+		reply.Result = true
+		rf.voteFor = args.Peer
+	}
 }
 
 //
@@ -164,6 +191,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	if reply.Result {
+		rf.mu.Lock()
+		rf.voteCnt++
+		rf.mu.Unlock()
+	}
 	return ok
 }
 
@@ -220,12 +252,84 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-
+	rf.role = Follower
+	rf.n = len(peers)
+	rf.currentTerm = 0
+	rf.voteCnt = 0
+	rf.voteFor = -1
 	// Your initialization code here (2A, 2B, 2C).
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	
+	heart := 160 * time.Millisecond
+	timerHeart := time.NewTimer(heart)
 
+	go func(){
+		DPrintf("begin background goroutine that check heartbeat and selection")
+		for{
+			if rf.role == Follower{
+				select{
+					case m := <- applyCh:
+					{
+						DPrintf("receive %v",m)
+						timerHeart.Reset(heart)
+					}					
+				case <-timerHeart.C:
+					{
+						DPrintf("not receive heartbeat after 160ms")
+						rf.role = Candidate
+					}			
+				}
+			}else if rf.role == Leader{
+
+			}else if rf.role == Candidate{
+				DPrintf("raft %d become a candidate", rf.me)
+				rf.currentTerm++
+				rf.voteCnt++
+				rf.voteFor=rf.me
+				x := time.Duration(rand.Intn(80)+300) * time.Millisecond
+				rf.electionTimer = time.NewTimer(x)
+				waitVote := make(chan string)
+				go func(){
+					var wg sync.WaitGroup
+					for i := 0; i < rf.n; i++{
+						if i != rf.me{
+							wg.Add(1)
+							go func(i int){
+								req := &RequestVoteArgs{}
+								rep := &RequestVoteReply{}
+								rf.sendRequestVote(i, req, rep)
+								wg.Done()
+								DPrintf("after vote, raft %v get res %v get vote %v",rf.me, *rep, rf.voteCnt)
+							}(i)
+						}
+					}
+					wg.Wait()
+					waitVote<- "done"
+				}()
+				for{				
+					select{
+						case  <- waitVote:{
+							DPrintf("raft %v vote finish ,get vote  %v", rf.me,rf.voteCnt)
+							if rf.voteCnt >= 2{
+								rf.role = Leader
+								break
+							}
+						}
+						case m := <- applyCh:{
+							DPrintf("receive %v ", m)
+						}
+						case <- rf.electionTimer.C:{
+							DPrintf("raft %v election timeout",rf.me)
+							rf.role=Follower
+							break
+						}
+					}
+				}
+			}
+		}
+	}()
 
 	return rf
 }
