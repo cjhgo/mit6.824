@@ -75,7 +75,10 @@ type Raft struct {
 	n					int									// peers中一共有多少个peer
 	electionTimer *time.Timer 			//选举计时器
 	heartTimer *time.Timer 				//心跳等待计时器
+	heartTicker *time.Ticker 				//心跳等待计时器
 	applyCh chan ApplyMsg
+	recVote chan string //收到了投票请求
+	recHeart chan string //收到了心跳包
 	ticker *time.Ticker
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -165,7 +168,7 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	
+	go func(){rf.recVote <- ""}()
 	// Your code here (2A, 2B).
 	rf.mu.Lock()	
 	if args.Term < rf.currentTerm{
@@ -180,7 +183,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}else if args.Term > rf.currentTerm{
 		reply.Result = true
 		rf.voteFor = args.Peer
-		rf.currentTerm = args.Term
+		DPrintf("raft %v change  %v,%v --> %v,%v,cause get vote req from %v", rf.me, rf.role,rf.currentTerm,1,args.Term,args.Peer)
+		rf.currentTerm = args.Term		
+		rf.applyCh <- ApplyMsg{}
 		rf.role = Follower
 		if rf.ticker != nil{
 			rf.ticker.Stop()
@@ -196,6 +201,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 }
 
 func (rf *Raft) AppendEntries(args* AppendEntriesArgs, reply *AppendEntriesReply){
+	go func(){rf.recHeart <- ""}()
 	rf.applyCh <- args.Entry
 }
 //
@@ -229,6 +235,7 @@ func (rf *Raft) AppendEntries(args* AppendEntriesArgs, reply *AppendEntriesReply
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	DPrintf("raft %v req vote to %v : %v",rf.me,server, ok)
 	if reply.Result {
 		rf.mu.Lock()
 		rf.voteCnt++
@@ -239,6 +246,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool{
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)	
+	DPrintf("raft %v sendAppendEnitries to %v :%v", rf.me, server, ok)
 	return ok
 }
 
@@ -301,9 +309,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.voteCnt = 0
 	rf.voteFor = -1
 	rf.applyCh = applyCh
-	rf.ticker = time.NewTicker(100*time.Millisecond)
-	heart :=  120*time.Millisecond
-	rf.heartTimer = time.NewTimer(heart)
+	rf.recVote = make(chan string)
+	rf.recHeart = make(chan string)
+	rf.ticker = time.NewTicker(40*time.Millisecond)
+	heart :=  120*time.Millisecond		
 	// Your initialization code here (2A, 2B, 2C).
 
 	// initialize from state persisted before a crash
@@ -318,32 +327,57 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// heart := time.Duration(heartmap[rf.me]) * time.Millisecond
 
 
-	go func(){
-		
-		for{
-			DPrintf("raft %v begin check heartbeat and selection,with role %v at %v",rf.me, rf.role, rf.currentTerm)
+	go func(){		
+		for{			
 			if rf.role == Follower{
+				DPrintf("raft %v begin check heartbeat and selection,with role %v at %v",rf.me, rf.role, rf.currentTerm)
 				DPrintf("raft %v will wait heart for %v", rf.me, heart)
+				// heartTimeout := make(chan string)
+				// go func(){
+				// 	rf.heartTimer.Reset(heart) 
+				// 	//= time.NewTimer(heart)	
+				// 	<- rf.heartTimer.C
+				// 	heartTimeout <- "aaaaaaa!"
+				// 	DPrintf("heartTimeout Happened! on raft: %v %v %v", rf.me, rf.role,rf.currentTerm)
+				// }()
+				// if rf.heartTimer == nil{
+				// 	rf.heartTimer = time.NewTimer(heart)
+				// }
 				select{
-					case m := <- applyCh:
-					{
-						DPrintf("raft %v receive heart ,%v",rf.me, m)
-						rf.heartTimer.Reset(heart)
-					}					
-					case <-rf.heartTimer.C:
-					{
-						DPrintf("raft %v not receive heartbeat after %v", rf.me,heart)
+					case <- rf.recHeart:
+					case <- rf.recVote:
+					case <- time.After(120*time.Millisecond):{
+						DPrintf("raft %v be %v  at %v not receive heartbeat after %v", rf.me,rf.role,rf.currentTerm, heart)
 						rf.role = Candidate
-					}			
 				}
-			}else if rf.role == Candidate{
-				DPrintf("raft %d become a candidate", rf.me)
+					// case m := <- applyCh:
+					// {
+					// 	// DPrintf("raft %v receive heartmessage ,%v, %v",rf.me, m,rf.heartTimer.Reset(heart))
+					// 	DPrintf("raft %v receive heartmessage ,%v",rf.me, m)
+					// 	if !rf.heartTimer.Stop(){
+					// 		<-rf.heartTimer.C
+					// 	}						
+					// 	rf.heartTimer.Reset(heart)
+					// 	// <-rf.heartTimer.C
+					// 	// rf.heartTimer = time.NewTimer(heart)
+					// 	// rf.heartTimer.Reset(heart)
+					// }					
+					// // case s := <- heartTimeout:
+					// case <-rf.heartTimer.C:
+					// {
+					// 	//DPrintf("raft %v at %v not receive heartbeat after %v, %v", rf.me,rf.role, heart,rf.heartTimer.Reset(heart))
+						
+						
+					// }
+				}
+			}else if rf.role == Candidate{				
 				rf.currentTerm++
 				rf.voteCnt=1
 				rf.voteFor=rf.me
 				x := time.Duration(rand.Intn(80)+300) * time.Millisecond
+				DPrintf("raft %v begin check heartbeat and selection,with role %v at %v,wait for %v",rf.me, rf.role, rf.currentTerm,x)
 				rf.electionTimer = time.NewTimer(x)
-				waitVote := make(chan string)
+				waitVote := make(chan string,2)
 				go func(){
 					var wg sync.WaitGroup
 					for i := 0; i < rf.n; i++{
@@ -353,7 +387,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 								req := &RequestVoteArgs{rf.currentTerm, rf.me}
 								rep := &RequestVoteReply{}
 								rf.sendRequestVote(i, req, rep)
-								wg.Done()								
+								wg.Done()					
+								DPrintf("raft %v %v at %v req vote to %v res : %v ->%v",rf.me, rf.role,rf.currentTerm, i,rep, rf.voteCnt)			
+								if rf.voteCnt >= 2{
+									waitVote<- "done"				
+								}
 							}(i)
 						}
 					}
@@ -369,6 +407,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 							if rf.voteCnt >= 2{
 								rf.role = Leader
 								DPrintf("wow, raft %v become a leader at %v ", rf.me,rf.currentTerm)
+							}else{
+								DPrintf("sad, raft %v not become a leader at %v %v", rf.me,rf.currentTerm,rf.voteCnt)
 							}
 						}
 						case m := <- applyCh:{
@@ -388,11 +428,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					}					
 				}
 			}else if rf.role == Leader{
+				DPrintf("raft %v begin check heartbeat and selection,with role %v at %v",rf.me, rf.role, rf.currentTerm)
 				for _ = range rf.ticker.C{			
 					// m.Term = rf.currentTerm		
 					for i := 0; i < rf.n; i++{
 						if i != rf.me{
-							DPrintf("leader %v heart raft %v", rf.me, i)
+							// DPrintf("leader %v heart raft %v", rf.me, i)
 							go func(i int){
 								args := &AppendEntriesArgs{}
 								entry := ApplyMsg{}
