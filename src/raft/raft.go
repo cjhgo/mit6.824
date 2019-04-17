@@ -51,7 +51,7 @@ type AppendEntriesArgs struct{
 }
 
 type AppendEntriesReply struct{
-	
+	Term int
 }
 //
 // A Go object implementing a single Raft peer.
@@ -202,6 +202,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 func (rf *Raft) AppendEntries(args* AppendEntriesArgs, reply *AppendEntriesReply){
 	go func(){rf.recHeart <- ""}()
+	reply.Term = rf.currentTerm
 	rf.applyCh <- args.Entry
 }
 //
@@ -247,6 +248,15 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool{
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)	
 	DPrintf("raft %v sendAppendEnitries to %v :%v", rf.me, server, ok)
+	if ok{
+		if reply.Term > rf.currentTerm{
+			rf.role = Follower
+			rf.currentTerm = reply.Term
+			if rf.ticker != nil{
+				rf.ticker.Stop()
+			}
+		}
+	}
 	return ok
 }
 
@@ -310,8 +320,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.voteFor = -1
 	rf.applyCh = applyCh
 	rf.recVote = make(chan string)
-	rf.recHeart = make(chan string)
-	rf.ticker = time.NewTicker(40*time.Millisecond)
+	rf.recHeart = make(chan string)	
 	heart :=  120*time.Millisecond		
 	// Your initialization code here (2A, 2B, 2C).
 
@@ -429,8 +438,24 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				}
 			}else if rf.role == Leader{
 				DPrintf("raft %v begin check heartbeat and selection,with role %v at %v",rf.me, rf.role, rf.currentTerm)
+				rf.ticker = time.NewTicker(100*time.Millisecond)
+				// go func(){
+				// 	for;rf.role==Leader;{
+				// 		select{
+				// 		case <- rf.recHeart:
+				// 			rf.role = Follower
+				// 			rf.ticker.Stop()
+				// 		case <- rf.recVote:
+				// 			rf.role = Follower							
+				// 			rf.ticker.Stop()
+				// 		}
+				// 	}
+				// }()
 				for _ = range rf.ticker.C{			
 					// m.Term = rf.currentTerm		
+					// if rf.role != Leader{
+					// 	rf.ticker.Stop()
+					// }
 					for i := 0; i < rf.n; i++{
 						if i != rf.me{
 							// DPrintf("leader %v heart raft %v", rf.me, i)
@@ -443,7 +468,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 								rf.sendAppendEntries(i, args, reply)
 							}(i)
 						}
-					}
+					}					
 					// DPrintf("leader %v tick at %v",rf.me, t)
 				}
 			}
