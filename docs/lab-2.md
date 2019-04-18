@@ -100,6 +100,7 @@ Mkae 的 me 参数表明了自己在 peers 数组中的位置
   leader -> follower [label="收到更高term的rpc(心跳或投票)"];
  }
 '/>
+<img src="raft-role-state.svg">
 理解并实现这个状态机
 ### part2B
 
