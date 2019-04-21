@@ -31,13 +31,27 @@ The entries are numbered with index numbers.
 The log entry with a given index will eventually be committed. 
 At that point, your Raft should send the log entry to the larger service for it to execute
 
+
 这个实验中要实现extended-raft-paper中描述的几个方面:
 saving persistent state and reading it after a node fails and then restarts
 但不需要实现下边几个
 cluster membership changes (Section 6) or log compaction / snapshotting (Section 7).
 
-先理解extended-raft-paper和raft-lecture-notes再动手做实验,尤其关注论文中的 Figure 2
+先理解extended-raft-paper和raft-lecture-notes再动手做实验.
+你的实现要密切符合论文关于Raft的描述,尤其要关注论文中的 Figure 2.
+关于Raft的实现,除了paper和lecture notes之外,还可以参考以下这些资料:
 
+http://thesecretlivesofdata.com/raft/ Raft协议的图示
+https://thesquareplanet.com/blog/students-guide-to-raft/
+在并发程序中使用锁的建议 
+https://pdos.csail.mit.edu/6.824/labs/raft-locking.txt
+Raft并发程序的代码结构?
+https://pdos.csail.mit.edu/6.824/labs/raft-structure.txt
+
+For a wider perspective, have a look at Paxos, Chubby, Paxos Made Live, Spanner, Zookeeper, Harp, Viewstamped Replication, and Bolosky et al.
+
+
+这个实验不需要写太多的代码,重点在于并发的代码难以调试.
 ### 关于代码
 
 通过在raft/raft.go中添加代码来实现Raft算法
@@ -61,6 +75,9 @@ Mkae 的 me 参数表明了自己在 peers 数组中的位置
 `labrpc` 这个 package 对 Golang 的 `pkg/net/rpc` 进行了修改,内部使用 Go channels 而不是 sockets
 测试用例通过 `labrpc` 这个修改过的 package 可以延迟,重排,删除 rpc 调用,这样就能模拟各种网络异常的情况
 通过模拟网络异常的情况,测试用例可以验证所实现的 Raft 能否在各种条件下保证一致性
+
+ >Your first implementation may not be clean enough that you can easily reason about its correctness. Give yourself enough time to rewrite your implementation so that you can easily reason about its correctness. Subsequent labs will build on this lab, so it is important to do a good job on your implementation.
+你写的代码一开始也许能够测试,但其结构并不清晰,并不足以用来证明它的正确性.花时间让代码既是正确的,也是结构清晰的.
 
 ### part2A
 任务:**实现领导人选举和心跳功能**
@@ -103,5 +120,35 @@ Mkae 的 me 参数表明了自己在 peers 数组中的位置
 <img src="raft-role-state.svg">
 理解并实现这个状态机
 ### part2B
+在这个实验中我们要让Raft真正实现日志的一致性复制.Leader状态的Raft 实例通过调用`Start`函数来开始向log中添加log entry的过程,然后leader要通过`AppendEntries rpc`来把这个log entry发送给其他的服务器.
+
+因此我们的代码的
+任务:**实现leader和follower 添加log entry的功能**.
+这涉及到完成`Start`函数,补充`AppendEntries`函数(2a中只是处理了心跳),处理leader的`commitIndex`变量.
+
+#### 提示
++ 要实现5.4.1中提出的选举限制,即
+`只有那些包含了所有已经commit的log entry的candidate才能被选举为leader`
+这通过**follower只给log比自己更新的candidate投票**这个规则来实现
++ 代码中如果存在着不必要的选举会无法通过lab 2b的测试.不必要的选举指的是,在系统中存在着活的leader的情况下还在举行着选举.这可能是因为选举计时器出了bug,也可能是因为leader选出来之后没有及时发送心跳.
++ 代码中要实现等待某个事件发生的功能.不要用循环忙等,要么使用golang的channel,要么使用条件变量,实在不行也要在loop在插入sleep的代码.
++ 要花时间利用`structuring concurrent code`中学到的知识来重构代码.
+后边的实验中你会因为这里的代码清晰简洁而感谢自己的.
+
+如果代码写的太差导致代码运行的慢也会无法通过测试.可以通过time命令来了解自己的代码,它会告诉你,你的代码总共用了多少时间,除去waitting/sleeping之外,实际执行指令的部分用了多少时间.
+如果你的代码总时间超过1分钟或指令执行部分超过5s,那么都会无法通过测试.
+
 
 ### part2C
+### 附录
+#### Figure2&3 in paper
+
+#### students-guide-to-raft/
+https://thesquareplanet.com/blog/students-guide-to-raft/
+#### Raft Locking 
+在并发程序中使用锁的建议 
+https://pdos.csail.mit.edu/6.824/labs/raft-locking.txt
+
+#### Raft Structure
+Raft并发程序的代码结构?
+https://pdos.csail.mit.edu/6.824/labs/raft-structure.txt
