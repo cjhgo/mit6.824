@@ -42,7 +42,6 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
-	Term int	
 }
 
 //
@@ -63,7 +62,8 @@ type Raft struct {
 	voteFor 	int									// this peer 是否已经投过票了
 	voteCnt 	int 								// this peer 在选举中获得了多少票数
 	currentTerm		int							// this peer 当前处于哪个term
-	currentIndex	int							// tiis peer 的logs最新的log entry的index	
+	commitIndex	int							// tiis peer 的logs最新的log entry的index	
+	lastApplied int							//上一个applied的log entry的index
 	n					int									// peers中一共有多少个peer
 	// electionTimer *time.Timer 			//选举计时器
 	// heartTimer *time.Timer 				//心跳等待计时器
@@ -229,7 +229,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 				rf.voteCnt++
 				DPrintf("raft %v at %v , now vote :%v",rf.me,rf.currentTerm,rf.voteCnt)
 			}		
-			if rf.voteCnt >= 2{
+			if rf.voteCnt >= rf.n/2{
 				rf.electWin <- ""
 			}
 		}
@@ -286,6 +286,10 @@ func (rf *Raft) AppendEntries(args* AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		reply.Result=true
 		rf.recHeart <- ""
+		if args.Entry != (ApplyMsg{}){
+			DPrintf("raft %v get command %v", rf.me,args.Entry)
+			rf.applyCh <- args.Entry
+		}
 		return
 	}
 }
@@ -310,9 +314,28 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
-
-
-	return index, term, isLeader
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.role != Leader{
+		return index, term, false
+	}else{
+		index=rf.commitIndex
+		term=rf.currentTerm
+		m := ApplyMsg{true,command,rf.commitIndex}	
+		rf.commitIndex++
+		rf.applyCh <- m
+		for i := 0; i < rf.n; i++{
+			if i != rf.me{
+				// DPrintf("leader %v heart raft %v", rf.me, i)
+				go func(i int){
+					args := &AppendEntriesArgs{m,rf.currentTerm}
+					reply := &AppendEntriesReply{}
+					rf.sendAppendEntries(i, args, reply)
+				}(i)
+			}
+		}
+		return index, term, isLeader 
+	}	
 }
 
 
@@ -366,7 +389,6 @@ func (rf *Raft) Run(){
 					go func(i int){
 						args := &AppendEntriesArgs{}
 						entry := ApplyMsg{}
-						entry.Term = rf.currentTerm
 						args.Entry=entry
 						args.Term=rf.currentTerm
 						reply := &AppendEntriesReply{}
@@ -409,6 +431,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.role = Follower
 	rf.n = len(peers)
 	rf.currentTerm = 0
+	rf.lastApplied=0
+	rf.commitIndex=1
 	rf.voteCnt = 0
 	rf.voteFor = -1
 	rf.applyCh = applyCh
