@@ -409,6 +409,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.commitIndex+=1
 		index = rf.commitIndex
 		term = rf.currentTerm
+		rf.logs[rf.commitIndex]=LogEntry{command,index,term}
 		go rf.SendAeToAll(command, index,term)
 		return index, term, isLeader 
 	}	
