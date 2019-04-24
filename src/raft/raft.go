@@ -1,7 +1,14 @@
 package raft
 
-import "time"
-import "math/rand"
+import (
+	"sync"
+	"labrpc"
+	"time"
+	"math/rand"
+	"math"
+	"encoding/json"
+	_ "fmt"
+)
 //
 // this is an outline of the API that raft must expose to
 // the service (or tester). see comments below for
@@ -19,8 +26,7 @@ import "math/rand"
 //   in the same server.
 //
 
-import "sync"
-import "labrpc"
+
 
 // import "bytes"
 // import "labgob"
@@ -42,8 +48,14 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
+	CommandTerm int
 }
 
+type LogEntry struct{
+	Command interface{}
+	Index int
+	Term int
+}
 //
 // A Go object implementing a single Raft peer.
 //
@@ -65,6 +77,7 @@ type Raft struct {
 	commitIndex	int							// tiis peer 的logs最新的log entry的index	
 	lastApplied int							//上一个applied的log entry的index
 	n					int									// peers中一共有多少个peer
+	half int
 	// electionTimer *time.Timer 			//选举计时器
 	// heartTimer *time.Timer 				//心跳等待计时器
 	// heartTicker *time.Ticker 				//心跳等待计时器
@@ -72,6 +85,7 @@ type Raft struct {
 	recVote chan string //收到了投票请求
 	recHeart chan string //收到了心跳包
 	electWin chan string //得到多数票,赢得了选举
+	logs []LogEntry
 	// ticker *time.Ticker
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -229,7 +243,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 				rf.voteCnt++
 				DPrintf("raft %v at %v , now vote :%v",rf.me,rf.currentTerm,rf.voteCnt)
 			}		
-			if rf.voteCnt >= rf.n/2{
+			if rf.voteCnt >= rf.half{
 				rf.electWin <- ""
 			}
 		}
@@ -240,8 +254,18 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 
 type AppendEntriesArgs struct{
-	Entry ApplyMsg
+	Entries []LogEntry
 	Term int
+	LeaderId int
+	PrevLogIndex int
+	PrevLogTerm int
+	LeaderCommit int
+
+}
+
+func String(obj interface{})string{
+	out,_:=json.Marshal(obj)
+	return string(out)
 }
 
 type AppendEntriesReply struct{
@@ -278,21 +302,84 @@ func (rf *Raft) AppendEntries(args* AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Result=false
 		return
 	}else{
+		rf.recHeart <- ""
 		if args.Term > rf.currentTerm{
 			rf.role=Follower
 			rf.voteFor=-1
 			rf.currentTerm=reply.Term
 			reply.Result=false
 		}
-		reply.Result=true
-		rf.recHeart <- ""
-		if args.Entry != (ApplyMsg{}){
-			DPrintf("raft %v get command %v", rf.me,args.Entry)
-			rf.applyCh <- args.Entry
+		consistency := false
+		// DPrintf("raft %v get command %v", rf.me,String(args))
+		if args.LeaderCommit == 1{
+			DPrintf("raft %v get command %v", rf.me,String(args))
+		}
+		if rf.logs[rf.commitIndex].Term == args.PrevLogTerm && rf.logs[rf.commitIndex].Index == args.PrevLogIndex{
+			consistency=true
+			if( rf.lastApplied < args.LeaderCommit){
+				for j:= rf.lastApplied; j <= args.LeaderCommit; j++{
+					if j != 0{
+						entry := rf.logs[j]
+						m := ApplyMsg{true,entry.Command,entry.Index,entry.Term}	
+						rf.applyCh <- m
+					}
+				}
+				rf.lastApplied = args.LeaderCommit
+			}
+		}
+		if consistency==false{
+			reply.Result = false			
+		}else{
+			if len(args.Entries) > 0 {				
+				entry := args.Entries[0]
+				rf.commitIndex += 1
+				rf.logs[rf.commitIndex]=entry
+			}
+			reply.Result=true
 		}
 		return
 	}
 }
+
+func (rf *Raft) SendAeToAll(command interface{}, index int,term int){
+	AeCount := 0
+	var mu sync.Mutex 
+	for i := 0; i < rf.n; i++{
+		if i != rf.me{
+			// DPrintf("leader %v heart raft %v", rf.me, i)
+			go func(i int){
+				// entry := LogEntry{command, index, rf.currentTerm}
+				// entries := []LogEntry{entry}
+				args := &AppendEntriesArgs{
+									[]LogEntry{{command, index, term}},
+									term,
+									rf.me,
+									rf.logs[index-1].Index,
+									rf.logs[index-1].Term,
+									rf.lastApplied,
+								}
+
+				reply := &AppendEntriesReply{}
+				DPrintf("raft %v send ae %v to %v", rf.me, args,i)
+				rf.sendAppendEntries(i, args, reply)
+				mu.Lock()
+				if(reply.Result == true){
+					AeCount += 1
+					if( AeCount >= rf.half){
+						m := ApplyMsg{true,command,index,term}	
+						rf.applyCh <- m
+						rf.lastApplied++
+						out,_ := json.Marshal(m)
+						DPrintf("raft %v commit message %v,%v",rf.me, string(out),AeCount)
+						AeCount=0
+					}
+				}
+				mu.Unlock()
+			}(i)
+		}
+	}
+}
+
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
@@ -319,25 +406,13 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if rf.role != Leader{
 		return index, term, false
 	}else{
-		index=rf.commitIndex
-		term=rf.currentTerm
-		m := ApplyMsg{true,command,rf.commitIndex}	
-		rf.commitIndex++
-		rf.applyCh <- m
-		for i := 0; i < rf.n; i++{
-			if i != rf.me{
-				// DPrintf("leader %v heart raft %v", rf.me, i)
-				go func(i int){
-					args := &AppendEntriesArgs{m,rf.currentTerm}
-					reply := &AppendEntriesReply{}
-					rf.sendAppendEntries(i, args, reply)
-				}(i)
-			}
-		}
+		rf.commitIndex+=1
+		index = rf.commitIndex
+		term = rf.currentTerm
+		go rf.SendAeToAll(command, index,term)
 		return index, term, isLeader 
 	}	
 }
-
 
 func (rf *Raft) Run(){
 	for{
@@ -386,11 +461,15 @@ func (rf *Raft) Run(){
 			for i := 0; i < rf.n; i++{
 				if i != rf.me{
 					// DPrintf("leader %v heart raft %v", rf.me, i)
-					go func(i int){
-						args := &AppendEntriesArgs{}
-						entry := ApplyMsg{}
-						args.Entry=entry
-						args.Term=rf.currentTerm
+					go func(i int){		
+						args := &AppendEntriesArgs{
+							[]LogEntry{},
+							rf.currentTerm,
+							rf.me,
+							rf.logs[rf.commitIndex].Index,
+							rf.logs[rf.commitIndex].Term,
+							rf.lastApplied,
+						}
 						reply := &AppendEntriesReply{}
 						rf.sendAppendEntries(i, args, reply)
 					}(i)
@@ -430,15 +509,18 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 	rf.role = Follower
 	rf.n = len(peers)
+	rf.half = int(math.Ceil(float64(rf.n)/2))
 	rf.currentTerm = 0
 	rf.lastApplied=0
-	rf.commitIndex=1
+	rf.commitIndex=0
 	rf.voteCnt = 0
 	rf.voteFor = -1
 	rf.applyCh = applyCh
 	rf.recVote = make(chan string)
 	rf.recHeart = make(chan string)	
 	rf.electWin = make(chan string)
+	rf.logs = make([]LogEntry,20)
+	rf.logs[0]=LogEntry{-1,0,0}
 	// Your initialization code here (2A, 2B, 2C).
 
 	// initialize from state persisted before a crash
