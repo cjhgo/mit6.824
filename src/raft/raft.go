@@ -7,7 +7,7 @@ import (
 	"math/rand"
 	"math"
 	"encoding/json"
-	"log"
+	_ "log"
 	_ "fmt"
 )
 //
@@ -301,7 +301,7 @@ type AppendEntriesReply struct{
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool{
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)	
-	DPrintf("raft %v sendAppendEnitries to %v :%v", rf.me, server, ok)
+	DPrintf("raft %v sendAppendEnitries to %v :%v,%v", rf.me, server, ok,reply)
 	if ok{
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
@@ -335,7 +335,13 @@ func (rf *Raft) AppendEntries(args* AppendEntriesArgs, reply *AppendEntriesReply
 		if args.LeaderCommit == 1{
 			DPrintf("raft %v get command %v", rf.me,String(args))
 		}
+		// met := rf.logs[rf.commitIndex].Term
+		// mei := rf.logs[rf.commitIndex].Index
+		// eqt := met == args.PrevLogTerm
+		// eqi	:= mei == args.PrevLogIndex
+		// DPrintf("raft %v status: %v %v %v %v %v \n%v\n%v",rf.me,rf.commitIndex, met, mei ,args.PrevLogTerm, args.PrevLogIndex ,String(rf.logs[:6]),String(args))
 		if rf.logs[rf.commitIndex].Term == args.PrevLogTerm && rf.logs[rf.commitIndex].Index == args.PrevLogIndex{
+		// if eqt && eqi {
 			consistency=true
 			DPrintf("raft %v consistency with raft %v", rf.me, args.LeaderId)
 			if( rf.lastApplied < args.LeaderCommit){
@@ -383,8 +389,9 @@ func (rf *Raft) SendCommandToAll(command interface{}, index int,term int){
 				reply := &AppendEntriesReply{}
 				for{
 					ok := rf.sendAppendEntries(i, args, reply)
-					DPrintf("raft %v send ae %v to %v,%v", rf.me, args,i,ok)
+					DPrintf("raft %v send command %v to %v,%v", rf.me, String(args),i,ok)
 					mu.Lock()
+					defer mu.Unlock()
 					if ok && rf.role==Leader && rf.currentTerm==args.Term && reply.Result == true{
 						AeCount += 1
 						if( AeCount >= rf.half){							
@@ -397,8 +404,7 @@ func (rf *Raft) SendCommandToAll(command interface{}, index int,term int){
 						}
 						rf.nextIndex[i]=rf.commitIndex+1						
 						break
-					}
-					mu.Unlock()
+					}					
 				}				
 			}(i)
 		}
@@ -474,9 +480,11 @@ func (rf *Raft) Run(){
 			select{
 			case <- rf.electWin:
 				rf.role = Leader
+				rf.mu.Lock()
 				for i := range rf.nextIndex{
 					rf.nextIndex[i]=rf.commitIndex+1
 				}
+				rf.mu.Unlock()
 				DPrintf("wow, raft %v become a leader at %v ", rf.me,rf.currentTerm)
 			case <- rf.recHeart:
 				rf.role = Follower
@@ -484,36 +492,16 @@ func (rf *Raft) Run(){
 				DPrintf("raft %v election timeout after for %v",rf.me,x)
 			}
 		case Leader:
-			// for i := 0; i < rf.n; i++{
-			// 	if i != rf.me{
-			// 		// DPrintf("leader %v heart raft %v", rf.me, i)
-			// 		go func(i int){		
-			// 			args := &AppendEntriesArgs{
-			// 				[]LogEntry{},
-			// 				rf.currentTerm,
-			// 				rf.me,
-			// 				rf.logs[rf.commitIndex].Index,
-			// 				rf.logs[rf.commitIndex].Term,
-			// 				rf.lastApplied,
-			// 			}
-			// 			reply := &AppendEntriesReply{}
-			// 			rf.sendAppendEntries(i, args, reply)
-			// 		}(i)
-			// 	}
-			// }
 			rf.SendHeartToAll()
 			time.Sleep(120*time.Millisecond)
 		}
 	}
 }
-func (rf *Raft) SendHeartToI(server int) (*AppendEntriesReply, bool){
+func (rf *Raft) SendHeartToI(server int){
 	entries := []LogEntry{}
 	ni := rf.nextIndex[server]
 	for i := ni; i <= rf.commitIndex;i++{
 		entries = append(entries, rf.logs[i])
-	}
-	if server == (rf.me+1)%rf.n{
-		log.Printf("raft %v send heart to %v ,error %v",rf.me, server, ni)
 	}
 	args := &AppendEntriesArgs{
 		entries,
@@ -523,31 +511,23 @@ func (rf *Raft) SendHeartToI(server int) (*AppendEntriesReply, bool){
 		rf.logs[ni-1].Term,
 		rf.lastApplied,
 	}
-
-	reply := &AppendEntriesReply{}
-	DPrintf("raft %v send ae %v to %v", rf.me, String(args),server)
+	DPrintf("raft %v send herat data \n%v to %v, now ni %v", rf.me, String(args),server, ni)
+	reply := &AppendEntriesReply{}	
 	ok := rf.sendAppendEntries(server, args, reply)
-	return reply,ok
+	rf.mu.Lock()
+	if ok && rf.role==Leader && rf.currentTerm==args.Term{
+		if reply.Result == true{
+			rf.nextIndex[server]=rf.commitIndex+1			
+		}else{
+			rf.nextIndex[server] -= 1
+		}
+	}
+	rf.mu.Unlock()
 }
 func (rf *Raft) SendHeartToAll(){
-	oldterm := rf.currentTerm
 	for i := 0; i < rf.n; i++{
 		if i != rf.me{
-			// DPrintf("leader %v heart raft %v", rf.me, i)
-			go func(i int){
-				for{
-					reply,ok := rf.SendHeartToI(i)
-					if ok && rf.role==Leader && rf.currentTerm==oldterm{
-						if reply.Result == true{
-							break
-						}else{
-							rf.nextIndex[i] -= 1
-						}
-					}else{
-						break
-					}
-				}				
-			}(i)
+			go rf.SendHeartToI(i)
 		}
 	}	
 }
